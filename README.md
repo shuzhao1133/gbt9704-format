@@ -101,4 +101,4 @@ python3 scripts/format_fix.py 文稿.docx -out 终稿.docx --no-layout
 
 MIT — 随便用，欢迎 Star / Fork / PR。
 
-> 由政府咨询行业一线需求驱动，在 [Claude](https://claude.com/claude-code) 协助下开发，每一条规则都经过真实规划文稿实测。
+> 为公文写作与排版场景打造，在 [Claude](https://claude.com/claude-code) 协助下开发，每一条规则都经过真实文稿反复实测。
