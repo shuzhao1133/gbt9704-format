@@ -167,9 +167,9 @@ def transform_text(text, keep_inner_spaces=False):
                 out[i] = '）'
             elif c in ',;:?!':
                 if c == ',' and prev.isdigit() and nxt.isdigit():
-                    continue
-                if prev and CJK(prev):
-                    out[i] = HALF2FULL[c]
+                    continue          # 千分位由 2d 规则处理
+                if (prev and CJK(prev)) or (nxt and CJK(nxt)):
+                    out[i] = HALF2FULL[c]   # 前后任一侧邻汉字即属中文语境
             if out[i] != c:
                 stats['半角标点转全角'] += 1
         elif c == '.':
