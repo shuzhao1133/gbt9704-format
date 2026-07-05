@@ -115,6 +115,19 @@ def transform_text(text, keep_inner_spaces=False):
         for k in range(s + 1, e):
             out[k] = ''
         stats['省略号规范'] += 1
+    for m in re.finditer(r'…+', text):          # 单字符省略号…规范为……（两字符六点）
+        if len(m.group()) != 2:
+            out[m.start()] = '……'
+            for k in range(m.start() + 1, m.end()):
+                out[k] = ''
+            stats['省略号规范'] += 1
+
+    # 2a. 双尖括号errata：<<通知>> → 《通知》
+    for m in re.finditer(r'<<([^<>]{1,40}?)>>', text):
+        if any(CJK(c) for c in m.group(1)):
+            out[m.start()], out[m.start() + 1] = '《', ''
+            out[m.end() - 2], out[m.end() - 1] = '》', ''
+            stats['书名号规范（<<>>转《》）'] += 1
 
     # 2b. 汉字日期→阿拉伯（GB/T 9704 7.3.5.4 成文日期用阿拉伯数字标全）
     for m in re.finditer(r'[〇○零一二三四五六七八九]{2,4}年([一二三四五六七八九十]{1,3})月'
@@ -148,9 +161,9 @@ def transform_text(text, keep_inner_spaces=False):
             continue
         if c in HALF2FULL:
             prev, nxt = ctx(i, -1), ctx(i, 1)
-            if c == '(' and nxt and CJK(nxt):
-                out[i] = '（'
-            elif c == ')' and prev and CJK(prev):
+            if c == '(' and ((nxt and CJK(nxt)) or (prev and CJK(prev))):
+                out[i] = '（'      # 括号内侧或外侧邻汉字即转全角，杜绝全半角混用
+            elif c == ')' and ((prev and CJK(prev)) or (nxt and CJK(nxt))):
                 out[i] = '）'
             elif c in ',;:?!':
                 if c == ',' and prev.isdigit() and nxt.isdigit():
@@ -556,7 +569,7 @@ def main():
 
     doc = Document(a.docx)
     total = Counter()
-    headings, hints, to_delete = [], [], []
+    headings, hints, to_delete, captions = [], [], [], []
     first_heading_seen = False
     title_checked = False
     prev_p = None
@@ -566,10 +579,13 @@ def main():
             if not t.strip():
                 # 空白段落：正文区（首个标题之后）全删；封面区保留；
                 # 含图片/分节符/分页符的不删（GB 公文段间不空行，靠行距）
-                if first_heading_seen and not block._p.xpath(
+                prev_el, next_el = block._p.getprevious(), block._p.getnext()
+                between_tables = (prev_el is not None and prev_el.tag.endswith('}tbl')
+                                  and next_el is not None and next_el.tag.endswith('}tbl'))
+                if first_heading_seen and not between_tables and not block._p.xpath(
                         './/w:drawing | .//w:pict | .//w:object | .//w:sectPr'
                         ' | .//w:br[@w:type="page"]'):
-                    to_delete.append(block)
+                    to_delete.append(block)   # 两表之间的空段保留，否则删除后表格会合并
                 prev_p = block._p
                 continue
             level, num = detect_heading(t)
@@ -589,7 +605,14 @@ def main():
                 if not has_break:
                     hints.append(f'「{t.strip()}」未另面编排：附件应另起一页，"附件"'
                                  '及顺序号3号黑体顶格、标题居中于第三行（7.3.7），请人工分页')
-            new, stats, hs = transform_text(t, keep_inner_spaces=is_chapter_heading(t))
+            cm = re.match(r'^(表|图)\s*(\d+|[一二三四五六七八九十]+)', t.strip())
+            if cm:
+                captions.append((cm.group(1), cm.group(2), t.strip()[:20]))
+            if t.count('《') != t.count('》'):
+                hints.append(f'书名号不配对（《×{t.count("《")} vs 》×{t.count("》")}）：'
+                             f'「{t.strip()[:24]}…」')
+            new, stats, hs = transform_text(
+                t, keep_inner_spaces=is_chapter_heading(t) or bool(cm))  # 表题/图题空格保留
             total += stats
             hints += hs
             if new != t:
@@ -611,6 +634,22 @@ def main():
         p._p.getparent().remove(p._p)
     if to_delete:
         total['空白段落删除'] += len(to_delete)
+
+    # 图表编号统一性检查（只提示不改：改号涉及正文引用联动）
+    for kind_c in ('表', '图'):
+        items = [(num, txt) for k, num, txt in captions if k == kind_c]
+        if not items:
+            continue
+        styles = {'阿拉伯' if num.isdigit() else '汉字' for num, _ in items}
+        if len(styles) > 1:
+            hints.append(f'{kind_c}题编号体例混用（{kind_c}1 与 {kind_c}一 并存），'
+                         '建议统一为阿拉伯数字并全文连续编号')
+        nums = [int(n) for n, _ in items if n.isdigit()]
+        for i2, v in enumerate(nums, 1):
+            if v != i2:
+                hints.append(f'{kind_c}题编号疑似断档/乱序：期望{kind_c}{i2}，'
+                             f'实际出现{kind_c}{v}，请人工核对全文{kind_c}号与正文引用')
+                break
 
     if not a.no_layout:
         apply_layout(doc)
