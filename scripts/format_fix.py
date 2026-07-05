@@ -37,6 +37,8 @@ except ImportError:
 CJK = lambda c: '一' <= c <= '鿿' or c in '。，、；：？！（）《》【】""' "‘’—…·〔〕"
 SPACES = ' 　\t '
 CN_DIGITS = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+CN_YEAR = {'〇': '0', '○': '0', '零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
+           '五': '5', '六': '6', '七': '7', '八': '8', '九': '9'}
 HALF2FULL = {',': '，', ';': '；', ':': '：', '?': '？', '!': '！', '(': '（', ')': '）'}
 FW_ALNUM = {chr(0xFF10 + i): chr(0x30 + i) for i in range(10)}
 FW_ALNUM.update({chr(0xFF21 + i): chr(0x41 + i) for i in range(26)})
@@ -89,11 +91,12 @@ def is_chapter_heading(text):
 
 
 def transform_text(text, keep_inner_spaces=False):
-    """返回 (新文本, Counter{规则: 次数})。keep_inner_spaces=True 时保留段内空格
-    （用于'第一章 总则''前  言'等篇章标题，其空格是标题内分隔而非多余空格）。"""
+    """返回 (新文本, Counter{规则: 次数}, [提示])。keep_inner_spaces=True 时保留段内
+    空格（用于'第一章 总则''前  言'等篇章标题，其空格是标题内分隔而非多余空格）。"""
     n = len(text)
     out = list(text)
     stats = Counter()
+    hints = []
 
     def ctx(i, d):
         j = i + d
@@ -112,6 +115,33 @@ def transform_text(text, keep_inner_spaces=False):
         for k in range(s + 1, e):
             out[k] = ''
         stats['省略号规范'] += 1
+
+    # 2b. 汉字日期→阿拉伯（GB/T 9704 7.3.5.4 成文日期用阿拉伯数字标全）
+    for m in re.finditer(r'[〇○零一二三四五六七八九]{2,4}年([一二三四五六七八九十]{1,3})月'
+                         r'(?:([一二三四五六七八九十]{1,3})日)?', text):
+        y = ''.join(CN_YEAR.get(c, '') for c in m.group(0).split('年')[0])
+        if len(y) < 2:
+            continue
+        rep = f'{y}年{cn2int(m.group(1))}月'
+        if m.group(2):
+            rep += f'{cn2int(m.group(2))}日'
+        out[m.start()] = rep
+        for k in range(m.start() + 1, m.end()):
+            out[k] = ''
+        stats['汉字日期转阿拉伯'] += 1
+
+    # 2c. 月日不编虚位：07月05日 → 7月5日（10月/20日 不受影响）
+    for m in re.finditer(r'(?<![\d])0([1-9])\s*[月日]', text):
+        if out[m.start()] == '0':
+            out[m.start()] = ''
+            stats['月日虚位删除'] += 1
+
+    # 2d. 千分位逗号删除（GB/T 15835 分节用千分空不用逗号；仅中文语境段落）
+    if any(CJK(c) for c in text):
+        for m in re.finditer(r'(?<=\d),(?=\d{3}(?!\d))', text):
+            if out[m.start()] == ',':
+                out[m.start()] = ''
+                stats['千分位逗号删除'] += 1
 
     for i, c in enumerate(text):
         if out[i] != c:
@@ -156,12 +186,44 @@ def transform_text(text, keep_inner_spaces=False):
                 out[i] = ''
                 stats['并列书名号/引号间顿号删除'] += 1
 
-    # 4c. 发文字号用六角括号：国发[2024]5号 / 国发（2024）5号 → 国发〔2024〕5号
-    for m in re.finditer(r'[\[（(]((?:19|20|21)\d{2})[\]）)](?=\s*\d{1,4}\s*号)', text):
-        s, e = m.start(), m.end() - 1
-        if out[s] and out[e]:
-            out[s], out[e] = '〔', '〕'
+    # 4c. 发文字号：括号→六角〔〕；顺序号不加"第"、不编虚位（GB/T 9704 7.2.5）
+    for m in re.finditer(r'([〔\[（(])((?:19|20|21)\d{2})([〕\]）)])(\s*)(第?)(0*)(?=\d{1,4}\s*号)',
+                         text):
+        if m.group(1) != '〔' and out[m.start(1)] == m.group(1):
+            out[m.start(1)], out[m.start(3)] = '〔', '〕'
             stats['发文字号六角括号'] += 1
+        if m.group(5) and out[m.start(5)] == '第':
+            out[m.start(5)] = ''
+            stats['发文序号"第"字删除'] += 1
+        if m.group(6):
+            for k in range(m.start(6), m.end(6)):
+                out[k] = ''
+            stats['发文序号虚位删除'] += 1
+
+    # 4c2. 百分数范围两端都写%（GB/T 15835：63%～68%）：5～8% → 5%～8%
+    for m in re.finditer(r'(?<![\d.%])(\d+(?:\.\d+)?)([～—~\-])(?=\d+(?:\.\d+)?%)', text):
+        e = m.end(1) - 1
+        if out[e] == text[e]:
+            out[e] = text[e] + '%'
+            stats['百分数范围补前一个%'] += 1
+        if m.group(2) in '~-' and out[m.start(2)] == m.group(2):
+            out[m.start(2)] = '～'
+            stats['范围号规范为～'] += 1
+
+    # 4c3. 半角波浪号：数字/百分号语境 5%~8% → 5%～8%
+    for i, c in enumerate(text):
+        if c == '~' and out[i] == '~':
+            prev, nxt = ctx(i, -1), ctx(i, 1)
+            if (prev.isdigit() or prev == '%' or CJK(prev)) and (nxt.isdigit() or CJK(nxt)):
+                out[i] = '～'
+                stats['范围号规范为～'] += 1
+
+    # 4c4. "X月X号"→"X月X日"（有月份前缀才改；号楼/号线/号文件等不受影响）
+    for m in re.finditer(r'月\s*\d{1,2}(号)(?![楼栋线路院区])', text):
+        i = m.start(1)
+        if out[i] == '号':
+            out[i] = '日'
+            stats['"号"改"日"'] += 1
 
     # 4d. 年份起止范围用一字线：2023-2025年 → 2023—2025年（号码/复合名词不动）
     for m in re.finditer(r'(?:19|20|21)\d{2}\s*([-‐‑–])\s*(?=(?:19|20|21)\d{2}\s*(?:年|[）)]))', text):
@@ -169,6 +231,18 @@ def transform_text(text, keep_inner_spaces=False):
         if out[i] == text[i]:
             out[i] = '—'
             stats['年份范围改一字线'] += 1
+
+    # 4e. 中文段落的直双引号→弯引号（成对时按开/闭交替转换；落单只提示）
+    if any(CJK(c) for c in text):
+        qpos = [i for i, c in enumerate(text) if c == '"' and out[i] == '"']
+        if qpos:
+            if len(qpos) % 2 == 0:
+                for k, i in enumerate(qpos):
+                    out[i] = '“' if k % 2 == 0 else '”'
+                stats['直引号转弯引号'] += len(qpos)
+            else:
+                hints.append(f'直双引号有 {len(qpos)} 个（奇数，无法配对），请人工核对：'
+                             f'「{text[:24]}…」')
 
     def keep_space(i):
         p = i - 1
@@ -230,7 +304,16 @@ def transform_text(text, keep_inner_spaces=False):
         new = new[:-1]
         stats['标题末句号删除'] += 1
 
-    return new, stats
+    # 8. 附件说明格式（GB/T 9704 7.3.4）："附件1：xx" → "附件：1.xx"；名称末尾不加标点
+    m = re.match(r'^附件\s*(\d{1,2})\s*[：:.、]\s*', new)
+    if m:
+        new = f'附件：{m.group(1)}.' + new[m.end():]
+        stats['附件说明格式修正'] += 1
+    if re.match(r'^附件：', new) and len(new) <= 60 and new[-1] in '。；，、.;,':
+        new = new[:-1]
+        stats['附件名末尾标点删除'] += 1
+
+    return new, stats, hints
 
 
 def apply_to_runs(para, new_text):
@@ -415,8 +498,10 @@ def apply_layout(doc):
                     r.font.size = Pt(22)
                     r.font.bold = False
                     clean_decorations(r)
+                pf = block.paragraph_format
+                pf.line_spacing = Pt(33)
+                pf.space_before = pf.space_after = Pt(0)
                 block.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                block.paragraph_format.line_spacing = Pt(33)
                 continue
         if is_chapter_heading(text):
             # 第X章 / 前言目录等：黑体三号居中，行距33，不加首行缩进
@@ -426,7 +511,9 @@ def apply_layout(doc):
                 r.font.bold = False
                 clean_decorations(r)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            block.paragraph_format.line_spacing = Pt(33)
+            pf = block.paragraph_format
+            pf.line_spacing = Pt(33)
+            pf.space_before = pf.space_after = Pt(0)
             block._p.get_or_add_pPr().get_or_add_ind().set(qn('w:firstLineChars'), '0')
             continue
         name, bold = FONTS.get(level, FONTS[None])
@@ -437,9 +524,10 @@ def apply_layout(doc):
             clean_decorations(r)
         pf = block.paragraph_format
         pf.line_spacing = Pt(33) if level else Pt(28)
-        if not level:
-            ind = block._p.get_or_add_pPr().get_or_add_ind()
-            ind.set(qn('w:firstLineChars'), '200')
+        pf.space_before = pf.space_after = Pt(0)   # 段间不留距，撑满版心（5.2.3）
+        # 7.3.3 每个自然段左空二字——各级序数标题与正文一律首行缩进 2 字符
+        ind = block._p.get_or_add_pPr().get_or_add_ind()
+        ind.set(qn('w:firstLineChars'), '200')
 
 
 def check_sequence(headings):
@@ -468,29 +556,61 @@ def main():
 
     doc = Document(a.docx)
     total = Counter()
-    headings = []
+    headings, hints, to_delete = [], [], []
+    first_heading_seen = False
+    title_checked = False
+    prev_p = None
     for kind, block in iter_blocks(doc):
         if kind == 'p':
             t = block.text
             if not t.strip():
+                # 空白段落：正文区（首个标题之后）全删；封面区保留；
+                # 含图片/分节符/分页符的不删（GB 公文段间不空行，靠行距）
+                if first_heading_seen and not block._p.xpath(
+                        './/w:drawing | .//w:pict | .//w:object | .//w:sectPr'
+                        ' | .//w:br[@w:type="page"]'):
+                    to_delete.append(block)
+                prev_p = block._p
                 continue
             level, num = detect_heading(t)
+            if level or is_chapter_heading(t):
+                first_heading_seen = True
             if level:
                 headings.append((level, num, t))
-            new, stats = transform_text(t, keep_inner_spaces=is_chapter_heading(t))
+            if not title_checked and not level and not is_chapter_heading(t):
+                title_checked = True
+                if len(t.strip()) > 20 and len(t.strip()) <= 50 \
+                        and not t.strip().endswith(('。', '，', '；')):
+                    hints.append(f'题目约超过一行（{len(t.strip())}字），请人工回行并'
+                                 '排成梯形或菱形、词意完整（GB/T 9704 7.3.1）')
+            if re.match(r'^附件\s*\d{0,2}\s*$', t.strip()):
+                has_break = block._p.xpath('./w:pPr/w:pageBreakBefore') or (
+                    prev_p is not None and prev_p.xpath('.//w:br[@w:type="page"]'))
+                if not has_break:
+                    hints.append(f'「{t.strip()}」未另面编排：附件应另起一页，"附件"'
+                                 '及顺序号3号黑体顶格、标题居中于第三行（7.3.7），请人工分页')
+            new, stats, hs = transform_text(t, keep_inner_spaces=is_chapter_heading(t))
             total += stats
+            hints += hs
             if new != t:
                 apply_to_runs(block, new)
+            prev_p = block._p
         else:
             for row in block.rows:
                 for cell in row.cells:
                     for cp in cell.paragraphs:
                         if not cp.text:
                             continue
-                        new, stats = transform_text(cp.text)
+                        new, stats, hs = transform_text(cp.text)
                         total += stats
+                        hints += hs
                         if new != cp.text:
                             apply_to_runs(cp, new)
+
+    for p in to_delete:
+        p._p.getparent().remove(p._p)
+    if to_delete:
+        total['空白段落删除'] += len(to_delete)
 
     if not a.no_layout:
         apply_layout(doc)
@@ -506,8 +626,8 @@ def main():
         if not a.no_layout else '版式保留原样'
     print(f'已输出终稿：{a.out}')
     print(f'文字格式修改共 {n} 处：{detail}。{layout_msg}。')
-    for h in check_sequence(headings):
-        print(f'提示（未改动，涉及内容需人工/批注处理）：{h}')
+    for h in check_sequence(headings) + hints:
+        print(f'提示（未改动，需人工处理）：{h}')
 
 
 if __name__ == '__main__':
