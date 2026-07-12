@@ -288,7 +288,7 @@ def test_end_to_end():
         check('正文两端对齐(v2.3)', p.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY)
         ph = _para(d, '一、规划范围')
         check('一级标题行距32磅(v2.3)', ph.paragraph_format.line_spacing.pt == 32)
-        check('标题两端对齐(v2.3)', ph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY)
+        check('标题左对齐(v2.3.1)', ph.alignment == WD_ALIGN_PARAGRAPH.LEFT)
         pc2 = _para(d, '图1 某市商业网点布局示意图')
         check('居中图题对齐保留(v2.3)', pc2.alignment == WD_ALIGN_PARAGRAPH.CENTER)
         check('半角逗号已修', '中心城区，面积' in p.text)

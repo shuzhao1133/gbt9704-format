@@ -729,11 +729,13 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
         pf = block.paragraph_format
         pf.space_before = pf.space_after = Pt(0)   # 段间不留距，撑满版心（5.2.3）
         _set_first_line(block, first_line)
-        # 两端对齐（机构规范"四、段落"，2026-07-12）：标题一律两端对齐（单行视觉
-        # 同顶格左对齐）；正文/清单仅原为左对齐或未设时改——居中/右对齐段
-        # （图题表题、落款）是刻意编排，保留
-        if role == 'heading' or block.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT,
-                                                    WD_ALIGN_PARAGRAPH.JUSTIFY):
+        # 对齐（机构规范"四、段落"原文，2026-07-12）：标题左对齐；正文/清单两端
+        # 对齐——但仅在原为左对齐或未设时改，居中/右对齐段（图题表题、落款）
+        # 是刻意编排，保留
+        if role == 'heading':
+            block.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        elif block.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT,
+                                 WD_ALIGN_PARAGRAPH.JUSTIFY):
             block.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
