@@ -25,6 +25,7 @@ import format_fix as ff                                    # noqa: E402
 from docx import Document                                  # noqa: E402
 from docx.oxml.ns import qn                                # noqa: E402
 from docx.shared import Pt                                 # noqa: E402
+from docx.enum.text import WD_ALIGN_PARAGRAPH              # noqa: E402
 
 PASS = FAIL = 0
 FAILS = []
@@ -221,6 +222,8 @@ def _build_sample(path):
     d.add_paragraph('1、优化布局结构')                          # 真三级标题（顿号待修）
     d.add_paragraph('')                                   # 正文空段（应删除）
     d.add_paragraph('落实国发[2024]5号文件要求。')
+    d.add_paragraph('图1 某市商业网点布局示意图')                    # 居中图题哨兵（对齐应保留）
+    d.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
     d.add_paragraph('四、实施保障要点')                          # 明显跳号（缺三、应自动改号）
     tbl1 = d.add_table(rows=1, cols=1)
     tbl1.rows[0].cells[0].paragraphs[0].add_run('表内 文字')
@@ -282,13 +285,19 @@ def test_end_to_end():
         sp = p._p.pPr.find(qn('w:spacing'))
         check('行距规则为固定值(v2.2.1，最小值哨兵已纠正)',
               sp.get(qn('w:lineRule')) == 'exact' and sp.get(qn('w:line')) == '560')
+        check('正文两端对齐(v2.3)', p.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY)
+        ph = _para(d, '一、规划范围')
+        check('一级标题行距32磅(v2.3)', ph.paragraph_format.line_spacing.pt == 32)
+        check('标题两端对齐(v2.3)', ph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY)
+        pc2 = _para(d, '图1 某市商业网点布局示意图')
+        check('居中图题对齐保留(v2.3)', pc2.alignment == WD_ALIGN_PARAGRAPH.CENTER)
         check('半角逗号已修', '中心城区，面积' in p.text)
         p = _para(d, '（一）总体要求')
         check('二级标题楷体顶格', _flc(p) == '0' and _ea(p) == '楷体_GB2312'
               and p.runs[0].font.bold is False)
         p = _para(d, '1.优化布局结构')
         check('真三级标题序号已修且顶格', p is not None and _flc(p) == '0')
-        check('三级标题行距33磅', p.paragraph_format.line_spacing.pt == 33)
+        check('三级标题行距32磅(v2.3)', p.paragraph_format.line_spacing.pt == 32)
         p = _para(d, '1.《城乡规划法》')
         check('清单缩进2字符', _flc(p) == '200')
         check('清单行距28磅', p.paragraph_format.line_spacing.pt == 28)

@@ -11,7 +11,7 @@ format_fix.py — 政府报告 Word 格式一键修复（GB/T 9704 适用部分�
   1. 套用机构排版规范（与 GB/T 9704 一致）：页边距上37/下35/左28/右26mm；
      题目方正小标宋简体二号不加粗居中；正文仿宋_GB2312 3号（16pt）首行缩进2字符；
      一级标题黑体、二级楷体_GB2312、三级/四级仿宋_GB2312，全部不加粗，均3号；章级标题
-     （第X章/前言等）黑体三号居中；标题行距固定33磅、正文28磅；数字英文
+     （第X章/前言等）黑体三号居中；标题行距固定32磅、正文28磅；数字英文
      Times New Roman；页码按 GB/T 9704 7.5 自动生成（宋体4号"— N —"奇右偶左）。
      加 --no-layout 则保留原版式，只修文字格式硬伤。
   2. 段落分类（v2.0）：封面（首个标题之前，题目除外）与目录（SDT 内容控件/
@@ -649,7 +649,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
     """机构排版规范（2026-07 版，与 GB/T 9704 一致处从略）：
     题目=方正小标宋简体二号不加粗居中；一级黑体、二级楷体_GB2312、
     三级/四级仿宋_GB2312，全部不加粗，均三号；正文仿宋_GB2312三号缩进2字符；
-    标题行距33磅、正文28磅；
+    标题行距32磅、正文28磅；
     全文黑字白底（清页面背景、段落底纹、高亮、彩字、下划线）；表格内字体统一
     仿宋黑字（字号、表头加粗保留原样）。
     v2.0（问题1）：封面/目录完全不处理；真标题顶格不缩进（indent_headings=True
@@ -690,21 +690,21 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
                 r.font.size = Pt(22)
                 r.font.bold = False
                 clean_decorations(r)
-            _set_line_fixed(block, 33)
+            _set_line_fixed(block, 32)
             pf = block.paragraph_format
             pf.space_before = pf.space_after = Pt(0)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _set_first_line(block, '0')
             continue
         if role == 'chapter':
-            # 第X章 / 前言目录等：黑体三号居中，行距33，不加首行缩进
+            # 第X章 / 前言目录等：黑体三号居中，行距32，不加首行缩进
             for r in block.runs:
                 set_eastasia(r, '黑体')
                 r.font.size = Pt(16)
                 r.font.bold = False
                 clean_decorations(r)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _set_line_fixed(block, 33)
+            _set_line_fixed(block, 32)
             pf = block.paragraph_format
             pf.space_before = pf.space_after = Pt(0)
             _set_first_line(block, '0')
@@ -712,7 +712,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
         level, _ = detect_heading(text)
         if role == 'heading':
             name, bold = FONTS.get(level, FONTS[None])
-            spacing = 33
+            spacing = 32
             # 问题1定版：真标题顶格不缩进（机构惯例）；--indent-headings 恢复
             # GB/T 9704 7.3.3 红头公文式"每个自然段左空二字"
             first_line = '200' if indent_headings else '0'
@@ -729,6 +729,12 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
         pf = block.paragraph_format
         pf.space_before = pf.space_after = Pt(0)   # 段间不留距，撑满版心（5.2.3）
         _set_first_line(block, first_line)
+        # 两端对齐（机构规范"四、段落"，2026-07-12）：标题一律两端对齐（单行视觉
+        # 同顶格左对齐）；正文/清单仅原为左对齐或未设时改——居中/右对齐段
+        # （图题表题、落款）是刻意编排，保留
+        if role == 'heading' or block.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT,
+                                                    WD_ALIGN_PARAGRAPH.JUSTIFY):
+            block.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
 def audit_layout(blocks, roles):
@@ -767,7 +773,7 @@ def audit_layout(blocks, roles):
                      f'「{text[:14]}」现为{r.font.size.pt:g}磅')
                 break
         ls = block.paragraph_format.line_spacing
-        exp_ls = 33 if role in ('title', 'chapter', 'heading') else 28
+        exp_ls = 32 if role in ('title', 'chapter', 'heading') else 28
         if ls is not None and hasattr(ls, 'pt') and abs(ls.pt - exp_ls) > 0.6:
             note(f'{role_label(role, level)}行距应为固定{exp_ls}磅',
                  f'「{text[:14]}」现为{ls.pt:g}磅')
@@ -1067,7 +1073,7 @@ def main():
     n = sum(total.values())
     detail = '、'.join(f'{k} {v}' for k, v in total.most_common()) or '无'
     layout_msg = '版式已按机构规范统一（页边距、题目小标宋、标题黑体/楷体_GB2312/' \
-        '仿宋_GB2312、正文仿宋_GB2312 3号、标题行距33磅、正文28磅；真标题顶格、' \
+        '仿宋_GB2312、正文仿宋_GB2312 3号、标题行距32磅、正文28磅；真标题顶格、' \
         '正文与清单缩进2字符；封面与目录未改动；黑字白底：已清页面背景/段落底纹/' \
         '高亮/彩字/下划线；表格字体统一仿宋_GB2312；页码按GB/T 9704 7.5：' \
         '宋体4号"— N —"，距版心下缘7mm，单页居右、双页居左各空一字）' \
