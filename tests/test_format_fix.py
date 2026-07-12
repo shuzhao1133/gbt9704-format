@@ -273,11 +273,11 @@ def test_end_to_end():
         check('一级标题顶格', _flc(p) == '0' and _ea(p) == '黑体')
         check('旧磅值缩进已清', ind.get(qn('w:firstLine')) is None)
         p = _para(d, '本次规划范围')
-        check('正文缩进2字符', _flc(p) == '200' and _ea(p) == '仿宋')
+        check('正文缩进2字符', _flc(p) == '200' and _ea(p) == '仿宋_GB2312')
         check('正文行距28磅', p.paragraph_format.line_spacing.pt == 28)
         check('半角逗号已修', '中心城区，面积' in p.text)
         p = _para(d, '（一）总体要求')
-        check('二级标题楷体顶格', _flc(p) == '0' and _ea(p) == '楷体'
+        check('二级标题楷体顶格', _flc(p) == '0' and _ea(p) == '楷体_GB2312'
               and p.runs[0].font.bold is False)
         p = _para(d, '1.优化布局结构')
         check('真三级标题序号已修且顶格', p is not None and _flc(p) == '0')
@@ -294,7 +294,7 @@ def test_end_to_end():
         body_texts = [q.text for q in d.paragraphs]
         check('正文空段已删', body_texts.count('') <= 2)   # 封面1 + 两表间1
         check('封面表格字体不动', _ea(d.tables[0].rows[0].cells[0].paragraphs[0]) == '华文行楷')
-        check('正文表格字体统一仿宋', _ea(d.tables[1].rows[0].cells[0].paragraphs[0]) == '仿宋')
+        check('正文表格字体统一仿宋', _ea(d.tables[1].rows[0].cells[0].paragraphs[0]) == '仿宋_GB2312')
         check('两表之间空段保留', len(d.tables) == 3 or '第二表' in d.tables[-1].rows[0].cells[0].text)
         check('汇总含已修复说明', '已自动修复' in r.stdout and '「四、」→「三、」' in r.stdout)
         check('清单大缺口只提示', '缺口较大' in r.stdout)

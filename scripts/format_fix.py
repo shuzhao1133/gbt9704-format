@@ -9,8 +9,8 @@ format_fix.py — 政府报告 Word 格式一键修复（GB/T 9704 适用部分�
 
 缺省行为：
   1. 套用机构排版规范（与 GB/T 9704 一致）：页边距上37/下35/左28/右26mm；
-     题目方正小标宋简体二号不加粗居中；正文仿宋 3号（16pt）首行缩进2字符；
-     一级标题黑体、二级楷体、三级/四级仿宋，全部不加粗，均3号；章级标题
+     题目方正小标宋简体二号不加粗居中；正文仿宋_GB2312 3号（16pt）首行缩进2字符；
+     一级标题黑体、二级楷体_GB2312、三级/四级仿宋_GB2312，全部不加粗，均3号；章级标题
      （第X章/前言等）黑体三号居中；标题行距固定33磅、正文28磅；数字英文
      Times New Roman；页码按 GB/T 9704 7.5 自动生成（宋体4号"— N —"奇右偶左）。
      加 --no-layout 则保留原版式，只修文字格式硬伤。
@@ -638,8 +638,9 @@ def _set_first_line(para, chars):
 
 def apply_layout(doc, blocks, roles, indent_headings=False):
     """机构排版规范（2026-07 版，与 GB/T 9704 一致处从略）：
-    题目=方正小标宋简体二号不加粗居中；一级黑体、二级楷体、三级/四级仿宋，
-    全部不加粗，均三号；正文仿宋三号缩进2字符；标题行距33磅、正文28磅；
+    题目=方正小标宋简体二号不加粗居中；一级黑体、二级楷体_GB2312、
+    三级/四级仿宋_GB2312，全部不加粗，均三号；正文仿宋_GB2312三号缩进2字符；
+    标题行距33磅、正文28磅；
     全文黑字白底（清页面背景、段落底纹、高亮、彩字、下划线）；表格内字体统一
     仿宋黑字（字号、表头加粗保留原样）。
     v2.0（问题1）：封面/目录完全不处理；真标题顶格不缩进（indent_headings=True
@@ -652,12 +653,12 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
     for sec in doc.sections:
         sec.top_margin, sec.bottom_margin = Mm(37), Mm(35)
         sec.left_margin, sec.right_margin = Mm(28), Mm(26)
-    # 2026-07-04 用户定版：用新版字体名"楷体/仿宋"（所有现代 Windows 自带，
-    # 免安装即正确渲染），不用"楷体_GB2312/仿宋_GB2312"（需公文字体包，缺字体
-    # 的机器会退化成宋体假扮）。两代字体同源同形，外观几乎无差别。
-    # 2026-07-04 用户再定版：二级标题楷体不加粗（覆盖规范图片的"加粗"）
-    FONTS = {1: ('黑体', False), 2: ('楷体', False), 3: ('仿宋', False),
-             4: ('仿宋', False), None: ('仿宋', False)}
+    # 2026-07-12 用户定版（覆盖 2026-07-04 的"新版字体名"路线）：楷体/仿宋一律用
+    # GB2312 版字体名"楷体_GB2312/仿宋_GB2312"（机构规范原文写法；政府机器与 WPS
+    # 普遍自带，个人机器缺字体仅影响本机预览）。黑体/宋体/方正小标宋无 GB2312 变体。
+    # 2026-07-04 用户定版：二级标题楷体不加粗（覆盖规范图片的"加粗"）
+    FONTS = {1: ('黑体', False), 2: ('楷体_GB2312', False), 3: ('仿宋_GB2312', False),
+             4: ('仿宋_GB2312', False), None: ('仿宋_GB2312', False)}
     for (kind, block), role in zip(blocks, roles):
         if role == 'table':
             # 表格自动调整（安全子集）：字体统一仿宋、黑字、去高亮/下划线/底纹；
@@ -667,7 +668,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
                     for cp in cell.paragraphs:
                         clean_para_shading(cp)
                         for r in cp.runs:
-                            set_eastasia(r, '仿宋')
+                            set_eastasia(r, '仿宋_GB2312')
                             clean_decorations(r)
             continue
         if role in ('empty', 'cover', 'cover_table', 'toc'):
@@ -724,8 +725,9 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
 def audit_layout(blocks, roles):
     """--no-layout --review 组合：只查不改，按机构规范粗核字体/字号/行距/缩进，
     偏差按类别汇总（只统计显式设置且不符的，样式继承值不误报）。返回汇总行列表。"""
-    EXPECT_FONT = {'title': '方正小标宋简体', 'chapter': '黑体', 1: '黑体', 2: '楷体',
-                   3: '仿宋', 4: '仿宋', 'body': '仿宋', 'list': '仿宋'}
+    EXPECT_FONT = {'title': '方正小标宋简体', 'chapter': '黑体', 1: '黑体',
+                   2: '楷体_GB2312', 3: '仿宋_GB2312', 4: '仿宋_GB2312',
+                   'body': '仿宋_GB2312', 'list': '仿宋_GB2312'}
     EXPECT_SIZE = {'title': 22}
     dev = {}
 
@@ -746,7 +748,7 @@ def audit_layout(blocks, roles):
             rpr = r._element.rPr
             rf = rpr.find(qn('w:rFonts')) if rpr is not None else None
             ea = rf.get(qn('w:eastAsia')) if rf is not None else None
-            if ea and exp_font and ea not in (exp_font, exp_font + '_GB2312'):
+            if ea and exp_font and ea != exp_font:
                 note(f'{role_label(role, level)}字体应为{exp_font}',
                      f'「{text[:14]}」现为{ea}')
                 break
@@ -1055,11 +1057,11 @@ def main():
 
     n = sum(total.values())
     detail = '、'.join(f'{k} {v}' for k, v in total.most_common()) or '无'
-    layout_msg = '版式已按机构规范统一（页边距、题目小标宋、标题黑/楷/仿宋、' \
-        '正文仿宋3号、标题行距33磅、正文28磅；真标题顶格、正文与清单缩进2字符；' \
-        '封面与目录未改动；黑字白底：已清页面背景/段落底纹/高亮/彩字/下划线；' \
-        '表格字体统一仿宋；页码按GB/T 9704 7.5：宋体4号"— N —"，距版心下缘7mm，' \
-        '单页居右、双页居左各空一字）' \
+    layout_msg = '版式已按机构规范统一（页边距、题目小标宋、标题黑体/楷体_GB2312/' \
+        '仿宋_GB2312、正文仿宋_GB2312 3号、标题行距33磅、正文28磅；真标题顶格、' \
+        '正文与清单缩进2字符；封面与目录未改动；黑字白底：已清页面背景/段落底纹/' \
+        '高亮/彩字/下划线；表格字体统一仿宋_GB2312；页码按GB/T 9704 7.5：' \
+        '宋体4号"— N —"，距版心下缘7mm，单页居右、双页居左各空一字）' \
         if not a.no_layout else '版式保留原样'
     if not a.no_layout and a.indent_headings:
         layout_msg = layout_msg.replace('真标题顶格、正文与清单缩进2字符',
