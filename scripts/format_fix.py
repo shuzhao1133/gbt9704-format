@@ -22,10 +22,13 @@ format_fix.py — 政府报告 Word 格式一键修复（GB/T 9704 适用部分�
      中文语境半角标点转全角；全角字母数字转半角；.../。。。→……；重复标点折叠；
      序号写法 "1、"→"1."、"（一）、"→"（一）"、"一，"→"一、"、"(1)"→"（1）"；
      短标题末尾句号删除。
-  4. 只改格式不改内容；序号跳号/缺失/缺标点只提示不改动。
-  5. --review 审查模式：输出 原名_GBT9704修复版.docx（干净终稿）与
-     原名_GBT9704审查版.docx（修复版 + Word 批注，批注内容为所有"只提示
-     不改动"的人工检查项，署名"GB/T9704格式审查"）。
+  4. 只改格式不改内容；明显的序号问题直接修（v2.1 用户定版）：
+     数字+书名号缺点号（"23 《x》"→"23.《x》"）自动补；同级序号明显跳号
+     （缺口≤2，如一、二、四）自动前移改号并级联。重号/乱序/大缺口/越级
+     仍只提示——该改号还是补内容，机器无法判断。
+  5. --review 审查模式：输出 原名_GBT9704批注版.docx 单文件——全部自动修复
+     直接落在文中；敏感自动修复（补点、改号）各留一条【GB/T9704已修复】批注
+     供核对；机器不敢改的留【GB/T9704检查】批注（署名"GB/T9704格式审查"）。
 
 输出：终稿 .docx + 终端分类计数汇总（无修改记录文件）。
 """
@@ -58,11 +61,14 @@ PAT_L2 = re.compile(r'^（([一二三四五六七八九十]{1,3})）([、，,\.�
 PAT_L3 = re.compile(r'^(\d{1,2})([\.、，])')
 PAT_L4 = re.compile(r'^[（(](\d{1,2})[）)]([、，\.]?)')
 
-# 序号缺标点（只批注不改）："23 《零售业态分类》""一 规划范围""23《零售业态分类》"
+# 序号缺标点（v2.1 用户定版分两档）：
+#   自动补点——数字+书名号（"23 《零售业态分类》""23《零售业态分类》"→"23.《…"），
+#   段首数字紧跟书名号几乎不可能是别的意思；
+#   只批注——数字+空格+汉字/引号、汉字序数+空格（歧义更高，人工确认）。
 # 量词排除：段首"5 个项目""30 万平方米"是计量表述不是序号，不误报
 _MEASURE = '个万亿千百年月日家项条只台套批期次层间处元吨米km%％'
-PAT_NUM_NODOT = re.compile(r'^(\d{1,3})([ 　\t]+)(?=[《"“一-鿿])(?![' + _MEASURE + '])')
-PAT_NUM_GLUED = re.compile(r'^(\d{1,3})(?=《)')
+PAT_NUM_BOOK = re.compile(r'^(\d{1,3})[ 　\t]*(?=《)')
+PAT_NUM_NODOT = re.compile(r'^(\d{1,3})([ 　\t]+)(?=["“一-鿿])(?![' + _MEASURE + '])')
 PAT_CN_NODUN = re.compile(r'^([一二三四五六七八九十]{1,3})([ 　\t]+)'
                           r'(?=[一-鿿《"“])(?![' + _MEASURE + '])')
 
@@ -407,6 +413,12 @@ def transform_text(text, keep_inner_spaces=False):
 
     new = ''.join(out)
 
+    # 序号补下脚点（v2.1）：段首"数字+书名号"缺点号直接修，"23 《x》/23《x》"→"23.《x》"
+    m = PAT_NUM_BOOK.match(new)
+    if m:
+        new = m.group(1) + '.' + new[m.end():]
+        stats['序号补下脚点'] += 1
+
     m = PAT_L1.match(new)
     if m and m.group(2) != '、':
         new = new[:m.start(2)] + '、' + new[m.end(2):]
@@ -459,17 +471,16 @@ def transform_protect_ordinal(text):
 
 
 def detect_missing_ordinal_punct(text):
-    """序号缺标点检测（问题3，只批注不改）。返回批注文本或 None。"""
+    """序号缺标点检测——只批注不改的歧义情形（数字+书名号已由 transform_text
+    自动补点，不在此列）。返回批注文本或 None。"""
     t = text.strip()
+    if PAT_NUM_BOOK.match(t):
+        return None      # 走自动修复通道
     m = PAT_NUM_NODOT.match(t)
     if m:
         rest = t[m.end():]
-        return (f'数字序号格式疑似不规范，建议检查是否应调整为：'
-                f'{m.group(1)}. {rest[:20]}')
-    m = PAT_NUM_GLUED.match(t)
-    if m:
         return (f'数字序号后疑似缺少下脚点，建议检查是否应调整为：'
-                f'{m.group(1)}.{t[len(m.group(1)):][:20]}')
+                f'{m.group(1)}. {rest[:20]}')
     m = PAT_CN_NODUN.match(t)
     if m:
         rest = t[m.end():]
@@ -782,51 +793,88 @@ def review_checks(text):
     return out
 
 
-def check_sequence(items):
-    """序号跳号/重号/乱序/越级检查（问题3，只提示不改）。
-    items: ('chapter', para) 或 ('ord', level, num, text, para, is_true_heading)。
-    章级标题重置各级计数器；越级仅对真标题提示（并列清单直接挂 1. 属正常体例）。
-    返回 [(para, 提示文本)]。"""
+def int2cn(n):
+    """1—99 → 汉字数字（一、二…十、十一…九十九）。"""
+    U = '一二三四五六七八九'
+    if not 1 <= n <= 99:
+        return str(n)
+    if n < 10:
+        return U[n - 1]
+    tens, ones = divmod(n, 10)
+    s = ('' if tens == 1 else U[tens - 1]) + '十'
+    return s + (U[ones - 1] if ones else '')
+
+
+ORD_MARK = {1: lambda n: f'{int2cn(n)}、', 2: lambda n: f'（{int2cn(n)}）',
+            3: lambda n: f'{n}.', 4: lambda n: f'（{n}）'}
+ORD_HEAD_RE = {1: re.compile(r'^[一二三四五六七八九十]{1,3}、'),
+               2: re.compile(r'^（[一二三四五六七八九十]{1,3}）'),
+               3: re.compile(r'^\d{1,2}\.'),
+               4: re.compile(r'^[（(]\d{1,2}[）)]')}
+RENUMBER_GAP_MAX = 2   # 缺口≤2 视为"明显跳号"自动前移改号；更大缺口疑似结构缺失只提示
+
+
+def fix_sequence(items):
+    """序号检查 + 明显跳号自动改号（v2.1 用户定版：明显问题直接修）。
+    items: ('chapter',) 或 ('ord', level, num, para, is_head)。
+    章级标题重置各级计数器；跳号缺口≤RENUMBER_GAP_MAX 自动前移改号（级联），
+    每处附【已修复】说明供核对；重号/乱序/越级/大缺口只提示——该改哪个号、
+    还是缺了一节内容，机器无法判断。
+    返回 (fixed_log, notes)，均为 [(para, 文本)]。"""
     counters = {1: 0, 2: 0, 3: 0, 4: 0}
-    out = []
+    fixed, notes = [], []
     for it in items:
         if it[0] == 'chapter':
             counters = {1: 0, 2: 0, 3: 0, 4: 0}
             continue
-        _, level, num, text, para, is_head = it
+        _, level, num, para, is_head = it
+        text = para.text.strip()
         for l in range(level + 1, 5):
             counters[l] = 0
         expect = counters[level] + 1
         if is_head and level >= 2 and counters[level - 1] == 0:
-            out.append((para, f'层级疑似越级：「{text[:20]}」的上一级序号尚未出现'
-                              '（若为并列清单可忽略）'))
+            notes.append((para, f'层级疑似越级：「{text[:20]}」的上一级序号尚未出现'
+                                '（若为并列清单可忽略）'))
         if num == expect:
             pass
         elif num <= counters[level]:
-            out.append((para, f'序号重号/乱序：「{text[:20]}」同级序号此前已用到 '
-                              f'{counters[level]}'))
+            notes.append((para, f'序号重号/乱序：「{text[:20]}」同级序号此前已用到 '
+                                f'{counters[level]}'))
+        elif num - expect <= RENUMBER_GAP_MAX:
+            m = ORD_HEAD_RE[level].match(text)
+            if m:
+                new_mark = ORD_MARK[level](expect)
+                apply_to_runs(para, new_mark + text[m.end():])
+                fixed.append((para, f'序号跳号已自动改号：「{m.group()}」→「{new_mark}」'
+                                    f'（{text[m.end():][:14]}）。若此处实为缺失一节内容、'
+                                    '或正文有交叉引用旧序号，请恢复原号并人工处理'))
+                num = expect
+            else:
+                notes.append((para, f'序号跳号：「{text[:20]}」前缺第 {expect} 个同级序号'))
         else:
-            out.append((para, f'序号跳号：「{text[:20]}」前缺第 {expect} 个同级序号'))
+            notes.append((para, f'序号跳号：「{text[:20]}」前缺第 {expect} 个同级序号'
+                                '（缺口较大，疑似结构缺失，未自动改号）'))
         counters[level] = max(counters[level], num)
-    return out
+    return fixed, notes
 
 
-def add_review_comments(doc, notes):
-    """把"只提示不改动"项写成 Word 批注（问题2）。notes: [(para|None, 文本)]。
-    para 为 None 或已被删除时挂到第一个非空段。批注锚定段首 run。"""
+def add_review_comments(doc, entries):
+    """批注版落批注。entries: [(para|None, 完整批注文本)]——调用方自带
+    【GB/T9704已修复】/【GB/T9704检查】前缀。para 为 None 或已被删除时挂到
+    第一个非空段。批注锚定段首 run。"""
     first = None
     for kind, b in iter_blocks(doc):
         if kind == 'p' and b.text.strip() and b.runs:
             first = b
             break
     added = 0
-    for para, text in notes:
+    for para, text in entries:
         target = para
         if target is None or target._p.getparent() is None or not target.runs:
             target = first
         if target is None:
             continue
-        doc.add_comment(runs=[target.runs[0]], text=f'【GB/T9704检查】{text}',
+        doc.add_comment(runs=[target.runs[0]], text=text,
                         author=COMMENT_AUTHOR, initials=COMMENT_INITIALS)
         added += 1
     return added
@@ -839,7 +887,7 @@ def main():
     ap.add_argument('-out', '--out', help='终稿输出路径（--review 时可省略，按规则命名）')
     ap.add_argument('--no-layout', action='store_true', help='保留原版式，只修文字格式硬伤')
     ap.add_argument('--review', action='store_true',
-                    help='审查模式：输出 修复版 + 带批注的审查版 两个文件')
+                    help='审查模式：输出批注版单文件（自动修复落文+已修复/检查批注）')
     ap.add_argument('--indent-headings', action='store_true',
                     help='恢复红头公文式全段缩进（GB/T 9704 7.3.3，各级标题也左空二字）')
     a = ap.parse_args()
@@ -849,7 +897,7 @@ def main():
     doc = Document(a.docx)
     blocks, roles, fh = classify_blocks(doc)
     total = Counter()
-    seq_items, notes, to_delete, captions = [], [], [], []
+    notes, fixed_log, to_delete, captions = [], [], [], []
     prev_p = None
     title_checked = False
     for idx, ((kind, block), role) in enumerate(zip(blocks, roles)):
@@ -870,12 +918,11 @@ def main():
             if role in ('cover', 'toc'):
                 prev_p = block._p
                 continue      # 封面/目录：文字与版式一概不动（问题1）
-            level, num = detect_heading(t.strip())
-            if role == 'chapter':
-                seq_items.append(('chapter', block))
-            elif level:
-                seq_items.append(('ord', level, num, t.strip(), block,
-                                  is_true_heading(level, t.strip())))
+            mbook = PAT_NUM_BOOK.match(t.strip())
+            if mbook:
+                old_pref = t.strip()[:mbook.end()] + '《'
+                fixed_log.append((block, f'序号已自动补下脚点：「{old_pref}」→'
+                                  f'「{mbook.group(1)}.《」，请顺带核对'))
             if role == 'title' or (not title_checked and role == 'body'):
                 title_checked = True
                 if len(t.strip()) > 20 and len(t.strip()) <= 50 \
@@ -941,7 +988,28 @@ def main():
                               f'实际出现{kind_c}{v}，请人工核对全文{kind_c}号与正文引用'))
                 break
 
-    notes += check_sequence(seq_items)
+    # 序号检查与明显跳号自动改号（第二遍收集：补点后的"23.《"清单项已纳入计数，
+    # 依据清单缺点号补齐后不再误报"缺第23条"）
+    seq_items = []
+    for (kind, block), role in zip(blocks, roles):
+        if kind != 'p' or role in ('empty', 'cover', 'toc', 'title'):
+            continue
+        if block._p.getparent() is None:
+            continue      # 已删除的空段
+        t2 = block.text.strip()
+        if not t2:
+            continue
+        if role == 'chapter':
+            seq_items.append(('chapter',))
+            continue
+        lv, num2 = detect_heading(t2)
+        if lv:
+            seq_items.append(('ord', lv, num2, block, role == 'heading'))
+    seq_fixed, seq_notes = fix_sequence(seq_items)
+    if seq_fixed:
+        total['序号跳号自动改号'] += len(seq_fixed)
+    fixed_log += seq_fixed
+    notes += seq_notes
 
     # 落款成文日期编排检查（检测到文末日期落款才提示；封面日期不在此列）
     tail = [b for (k, b), r in zip(blocks, roles)
@@ -976,14 +1044,14 @@ def main():
             notes.append((None, f'版式偏差（--no-layout 未修复）：{line}'))
 
     base = os.path.splitext(a.docx)[0]
-    fixed_path = a.out or f'{base}_GBT9704修复版.docx'
-    doc.save(fixed_path)
-
-    review_path = None
     if a.review:
-        review_path = f'{base}_GBT9704审查版.docx'
-        added = add_review_comments(doc, notes)
-        doc.save(review_path)
+        out_path = a.out or f'{base}_GBT9704批注版.docx'
+        add_review_comments(
+            doc, [(p, f'【GB/T9704已修复】{h}') for p, h in fixed_log]
+                 + [(p, f'【GB/T9704检查】{h}') for p, h in notes])
+    else:
+        out_path = a.out
+    doc.save(out_path)
 
     n = sum(total.values())
     detail = '、'.join(f'{k} {v}' for k, v in total.most_common()) or '无'
@@ -996,10 +1064,13 @@ def main():
     if not a.no_layout and a.indent_headings:
         layout_msg = layout_msg.replace('真标题顶格、正文与清单缩进2字符',
                                         '全段左空二字（--indent-headings）')
-    print(f'已输出终稿：{fixed_path}')
-    if review_path:
-        print(f'已输出审查版（含 {len(notes)} 条批注）：{review_path}')
+    print(f'已输出{"批注版" if a.review else "终稿"}：{out_path}')
+    if a.review:
+        print(f'批注共 {len(fixed_log) + len(notes)} 条：已修复说明 {len(fixed_log)}、'
+              f'需人工确认 {len(notes)}')
     print(f'文字格式修改共 {n} 处：{detail}。{layout_msg}。')
+    for para, h in fixed_log:
+        print(f'已自动修复（请顺带核对）：{h}')
     for para, h in notes:
         print(f'提示（未改动，需人工处理）：{h}')
 

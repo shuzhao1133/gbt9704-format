@@ -85,6 +85,10 @@ def test_transform():
     t('一、总体要求。', '一、总体要求', '短标题末句号删除')
     t('附件1：实施方案', '附件：1.实施方案', '附件说明格式修正')
     t('附件：1.实施方案。', '附件：1.实施方案', '附件名末尾标点删除')
+    t('23 《零售业态分类》(GB/T18106-2021)；', '23.《零售业态分类》（GB/T18106-2021）；',
+      '数字+书名号缺点号自动补(v2.1)')
+    t('23《零售业态分类》', '23.《零售业态分类》', '直贴书名号自动补点(v2.1)')
+    t('2035《远景目标纲要》', '2035《远景目标纲要》', '4位数字+书名号不误补')
     t('第一章 总则', '第一章 总则', '章标题内空格保留', keep_inner_spaces=True)
     hints = ff.transform_text('存在"落单引号的段落')[2]
     check('直引号落单只提示', len(hints) == 1 and '奇数' in hints[0])
@@ -101,9 +105,10 @@ def test_classify():
     check('超30字是清单', not ff.is_true_heading(3, '1.' + '很' * 31))
     check('连排段是清单', not ff.is_true_heading(3, '1.优化布局。要坚持全市一盘棋统筹推进。'))
 
-    miss = ff.detect_missing_ordinal_punct('23 《零售业态分类》(GB/T18106-2021)；')
-    check('数字序号缺点号→批注', miss is not None and '23. 《零售业态分类》' in miss)
-    check('数字直贴书名号→批注', '23.' in (ff.detect_missing_ordinal_punct('23《零售业态分类》') or ''))
+    check('数字+书名号走自动通道',
+          ff.detect_missing_ordinal_punct('23 《零售业态分类》(GB/T18106-2021)；') is None)
+    miss = ff.detect_missing_ordinal_punct('23 零售业态分类规范说明')
+    check('数字+空格+汉字→批注', miss is not None and '23. 零售业态分类' in miss)
     miss = ff.detect_missing_ordinal_punct('一 规划范围')
     check('汉字序数缺顿号→批注', miss is not None and '一、规划范围' in miss)
     check('量词不误报', ff.detect_missing_ordinal_punct('5 个项目建成投用') is None)
@@ -111,39 +116,57 @@ def test_classify():
     check('正常序号不误报', ff.detect_missing_ordinal_punct('23.《商业网点分类》') is None)
     check('正常正文不误报', ff.detect_missing_ordinal_punct('本次规划范围为宁德市中心城区。') is None)
 
-    new, _, _ = ff.transform_protect_ordinal('23 《零售业态分类》(GB/T18106-2021)；')
-    check('序号保护：空格保留', new.startswith('23 《'))
-    check('序号保护：其余照修', '（GB/T18106-2021）；' in new)
+    new, _, _ = ff.transform_protect_ordinal('23 零售业态分类规范,详见附录')
+    check('序号保护：空格保留', new.startswith('23 零售业态分类'))
+    check('序号保护：其余照修', '规范，详见附录' in new)
 
 
-# ---------- C. 序号检查 ----------
-def _seq(*specs):
-    """specs: 'C'=章；(level, num, is_head)"""
+# ---------- C. 序号检查与明显跳号改号 ----------
+def _seq(*texts):
+    """用真实段落构造 items 跑 fix_sequence，返回 (文档, [已修复文本], [提示文本])。"""
+    d = Document()
     items = []
-    for s in specs:
-        if s == 'C':
-            items.append(('chapter', None))
-        else:
-            level, num, is_head = s
-            items.append(('ord', level, num, f'{num}@{level}', None, is_head))
-    return [msg for _, msg in ff.check_sequence(items)]
+    for tx in texts:
+        p = d.add_paragraph(tx)
+        if ff.is_chapter_heading(tx):
+            items.append(('chapter',))
+            continue
+        lv, num = ff.detect_heading(tx)
+        items.append(('ord', lv, num, p, ff.is_true_heading(lv, tx)))
+    fixed, notes = ff.fix_sequence(items)
+    return d, [m for _, m in fixed], [m for _, m in notes]
 
 
 def test_sequence():
-    check('顺号无提示', _seq((1, 1, True), (1, 2, True), (1, 3, True)) == [])
-    msgs = _seq((1, 1, True), (1, 2, True), (1, 4, True))
-    check('跳号', any('跳号' in m for m in msgs))
-    msgs = _seq((1, 1, True), (1, 2, True), (1, 2, True))
-    check('相邻重号', any('重号' in m for m in msgs))
-    msgs = _seq((1, 1, True), (1, 2, True), (1, 1, True))
-    check('隔位乱序(v2.0)', any('重号/乱序' in m for m in msgs))
-    check('跨章重置无误报', _seq('C', (1, 1, True), (1, 2, True), 'C', (1, 1, True)) == [])
-    msgs = _seq((1, 1, True), (3, 1, True))
-    check('真标题越级提示', any('越级' in m for m in msgs))
-    msgs = _seq((1, 1, True), (3, 1, False), (3, 2, False))
-    check('清单不报越级', not any('越级' in m for m in msgs))
-    msgs = _seq((1, 1, True), (2, 1, True), (3, 1, True), (2, 2, True), (3, 1, True))
-    check('高层出现重置低层', not any('跳号' in m or '重号' in m for m in msgs))
+    d, fx, ns = _seq('一、总体要求', '二、主要任务', '三、保障措施')
+    check('顺号无动作', not fx and not ns)
+    d, fx, ns = _seq('一、总体要求', '二、主要任务', '四、保障措施')
+    check('明显跳号自动改号(v2.1)', len(fx) == 1 and '「四、」→「三、」' in fx[0])
+    check('改号已落文中', d.paragraphs[2].text == '三、保障措施')
+    d, fx, ns = _seq('一、甲', '二、乙', '四、丙', '五、丁')
+    check('跳号级联改号', d.paragraphs[2].text == '三、丙'
+          and d.paragraphs[3].text == '四、丁')
+    d, fx, ns = _seq('（一）甲', '（三）乙')
+    check('二级跳号改号', d.paragraphs[1].text == '（二）乙')
+    d, fx, ns = _seq('1.第一项', '2.第二项', '4.第四项')
+    check('数字序号跳号改号', d.paragraphs[2].text == '3.第四项')
+    d, fx, ns = _seq('一、甲', '二、乙', '六、丙')
+    check('大缺口只提示不改', not fx and any('缺口较大' in m for m in ns)
+          and d.paragraphs[2].text == '六、丙')
+    d, fx, ns = _seq('一、甲', '二、乙', '二、丙')
+    check('相邻重号只提示', not fx and any('重号' in m for m in ns))
+    d, fx, ns = _seq('一、甲', '二、乙', '一、丙')
+    check('隔位乱序只提示', any('重号/乱序' in m for m in ns))
+    d, fx, ns = _seq('第一章 总则', '一、甲', '二、乙', '第二章 布局', '一、丙')
+    check('跨章重置无误报', not fx and not ns)
+    d, fx, ns = _seq('一、甲', '1.要点标题')
+    check('真标题越级提示', any('越级' in m for m in ns))
+    d, fx, ns = _seq('一、甲', '1.《城乡规划法》', '2.《商业网点分类》')
+    check('清单不报越级', not any('越级' in m for m in ns))
+    d, fx, ns = _seq('一、甲', '（一）乙', '1.要点甲', '（二）丙', '1.要点乙')
+    check('高层出现重置低层', not fx and not any('跳号' in m or '重号' in m for m in ns))
+    check('int2cn换算', ff.int2cn(3) == '三' and ff.int2cn(10) == '十'
+          and ff.int2cn(21) == '二十一')
 
 
 # ---------- D. 审查项 ----------
@@ -194,6 +217,7 @@ def _build_sample(path):
     d.add_paragraph('1、优化布局结构')                          # 真三级标题（顿号待修）
     d.add_paragraph('')                                   # 正文空段（应删除）
     d.add_paragraph('落实国发[2024]5号文件要求。')
+    d.add_paragraph('四、实施保障要点')                          # 明显跳号（缺三、应自动改号）
     tbl1 = d.add_table(rows=1, cols=1)
     tbl1.rows[0].cells[0].paragraphs[0].add_run('表内 文字')
     d.add_paragraph('')                                   # 两表之间空段（应保留）
@@ -261,9 +285,9 @@ def test_end_to_end():
         p = _para(d, '1.《城乡规划法》')
         check('清单缩进2字符', _flc(p) == '200')
         check('清单行距28磅', p.paragraph_format.line_spacing.pt == 28)
-        p = _para(d, '23 《零售业态分类》')
-        check('缺点号段空格保留', p is not None and p.text.startswith('23 《'))
-        check('缺点号段其余照修', '（GB/T18106-2021）' in p.text)
+        p = _para(d, '23.《零售业态分类》')
+        check('缺点号已自动补(v2.1)', p is not None and '（GB/T18106-2021）' in p.text)
+        check('明显跳号已改号(v2.1)', _para(d, '三、实施保障要点') is not None)
         p = _para(d, '落实国发')
         check('六角括号已修', '国发〔2024〕5号' in p.text)
         check('封面空段保留', d.paragraphs[0].text == '' or _para(d, '某市') is not None)
@@ -272,7 +296,8 @@ def test_end_to_end():
         check('封面表格字体不动', _ea(d.tables[0].rows[0].cells[0].paragraphs[0]) == '华文行楷')
         check('正文表格字体统一仿宋', _ea(d.tables[1].rows[0].cells[0].paragraphs[0]) == '仿宋')
         check('两表之间空段保留', len(d.tables) == 3 or '第二表' in d.tables[-1].rows[0].cells[0].text)
-        check('汇总含提示', '23. 《零售业态分类》' in r.stdout)
+        check('汇总含已修复说明', '已自动修复' in r.stdout and '「四、」→「三、」' in r.stdout)
+        check('清单大缺口只提示', '缺口较大' in r.stdout)
 
         # E2. --indent-headings 恢复红头式全缩进
         out2 = os.path.join(td, '红头.docx')
@@ -281,23 +306,26 @@ def test_end_to_end():
         d2 = Document(out2)
         check('--indent-headings标题也缩进', _flc(_para(d2, '一、规划范围')) == '200')
 
-        # E3. --review 双输出与批注
+        # E3. --review 批注版单文件（v2.1：修复落文 + 已修复/检查两类批注）
         r = subprocess.run([py, SCRIPT, src, '--review'], capture_output=True, text=True)
-        fixed = os.path.join(td, '样例_GBT9704修复版.docx')
-        review = os.path.join(td, '样例_GBT9704审查版.docx')
-        check('修复版存在', os.path.exists(fixed))
-        check('审查版存在', os.path.exists(review))
-        zf = zipfile.ZipFile(fixed)
-        check('修复版无批注', 'word/comments.xml' not in zf.namelist())
-        zr = zipfile.ZipFile(review)
-        check('审查版有批注', 'word/comments.xml' in zr.namelist())
+        annotated = os.path.join(td, '样例_GBT9704批注版.docx')
+        check('批注版存在', os.path.exists(annotated))
+        check('旧双文件不再输出',
+              not os.path.exists(os.path.join(td, '样例_GBT9704修复版.docx'))
+              and not os.path.exists(os.path.join(td, '样例_GBT9704审查版.docx')))
+        zr = zipfile.ZipFile(annotated)
+        check('批注版有批注', 'word/comments.xml' in zr.namelist())
         cxml = zr.read('word/comments.xml').decode('utf8')
-        check('批注带前缀', '【GB/T9704检查】' in cxml)
-        check('缺点号批注', '23. 《零售业态分类》' in cxml)
+        check('已修复批注前缀', '【GB/T9704已修复】' in cxml)
+        check('改号批注', '「四、」→「三、」' in cxml)
+        check('补点批注', '「23 《」→「23.《」' in cxml)
+        check('检查批注前缀', '【GB/T9704检查】' in cxml)
         check('专名引号批注', '十五五' in cxml)
         check('批注署名', ff.COMMENT_AUTHOR in cxml)
-        dfix = Document(fixed)
-        check('修复版与终稿一致(标题顶格)', _flc(_para(dfix, '一、规划范围')) == '0')
+        dann = Document(annotated)
+        check('批注版修复已落文', _para(dann, '三、实施保障要点') is not None
+              and _para(dann, '23.《零售业态分类》') is not None)
+        check('批注版标题顶格', _flc(_para(dann, '一、规划范围')) == '0')
 
         # E4. --no-layout：版式不动
         out4 = os.path.join(td, '仅文字.docx')
