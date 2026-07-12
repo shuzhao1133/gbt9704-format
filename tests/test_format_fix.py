@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(HERE, '..', 'scripts'))
 import format_fix as ff                                    # noqa: E402
 from docx import Document                                  # noqa: E402
 from docx.oxml.ns import qn                                # noqa: E402
+from docx.shared import Pt                                 # noqa: E402
 
 PASS = FAIL = 0
 FAILS = []
@@ -210,6 +211,9 @@ def _build_sample(path):
     hd._p.get_or_add_pPr().get_or_add_ind().set(qn('w:firstLine'), '640')  # 旧缩进哨兵
     ff.set_eastasia(hd.runs[0], '宋体')                       # 错误字体哨兵（审计用）
     d.add_paragraph('本次规划范围为某市中心城区,面积约100平方公里。')       # 正文（半角逗号）
+    bp = d.paragraphs[-1]
+    bp.paragraph_format.line_spacing = Pt(20)                # "最小值"行距哨兵：
+    bp._p.pPr.find(qn('w:spacing')).set(qn('w:lineRule'), 'atLeast')  # 复现 python-docx 只改数值不改规则
     d.add_paragraph('二、规划依据')
     d.add_paragraph('1.《城乡规划法》(2019年修正)')               # 清单
     d.add_paragraph('23 《零售业态分类》(GB/T18106-2021)；')     # 缺点号
@@ -275,6 +279,9 @@ def test_end_to_end():
         p = _para(d, '本次规划范围')
         check('正文缩进2字符', _flc(p) == '200' and _ea(p) == '仿宋_GB2312')
         check('正文行距28磅', p.paragraph_format.line_spacing.pt == 28)
+        sp = p._p.pPr.find(qn('w:spacing'))
+        check('行距规则为固定值(v2.2.1，最小值哨兵已纠正)',
+              sp.get(qn('w:lineRule')) == 'exact' and sp.get(qn('w:line')) == '560')
         check('半角逗号已修', '中心城区，面积' in p.text)
         p = _para(d, '（一）总体要求')
         check('二级标题楷体顶格', _flc(p) == '0' and _ea(p) == '楷体_GB2312'

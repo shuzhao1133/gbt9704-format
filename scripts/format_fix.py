@@ -627,6 +627,15 @@ def clean_para_shading(para):
             ppr.remove(shd)
 
 
+def _set_line_fixed(para, pt):
+    """行距固定值（Word 里显示"固定值 N磅"）。python-docx 对原规则为"最小值"
+    (atLeast) 的段落赋 Length 时只改数值不改规则，须显式置 lineRule=exact 兜底。"""
+    from docx.enum.text import WD_LINE_SPACING
+    pf = para.paragraph_format
+    pf.line_spacing = Pt(pt)
+    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+
+
 def _set_first_line(para, chars):
     """firstLineChars 以字符数控制缩进；置 0 时同时清掉绝对值 w:firstLine，
     防止旧的磅值缩进（如 406400 EMU）继续生效。"""
@@ -681,8 +690,8 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
                 r.font.size = Pt(22)
                 r.font.bold = False
                 clean_decorations(r)
+            _set_line_fixed(block, 33)
             pf = block.paragraph_format
-            pf.line_spacing = Pt(33)
             pf.space_before = pf.space_after = Pt(0)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _set_first_line(block, '0')
@@ -695,8 +704,8 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
                 r.font.bold = False
                 clean_decorations(r)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_line_fixed(block, 33)
             pf = block.paragraph_format
-            pf.line_spacing = Pt(33)
             pf.space_before = pf.space_after = Pt(0)
             _set_first_line(block, '0')
             continue
@@ -716,8 +725,8 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
             r.font.size = Pt(16)
             r.font.bold = bold
             clean_decorations(r)
+        _set_line_fixed(block, spacing)
         pf = block.paragraph_format
-        pf.line_spacing = Pt(spacing)
         pf.space_before = pf.space_after = Pt(0)   # 段间不留距，撑满版心（5.2.3）
         _set_first_line(block, first_line)
 
