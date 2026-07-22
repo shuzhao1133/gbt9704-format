@@ -22,7 +22,7 @@ format_fix.py — 政府报告 Word 格式一键修复（GB/T 9704 适用部分�
      中文语境半角标点转全角；全角字母数字转半角；.../。。。→……；重复标点折叠；
      序号写法 "1、"→"1."、"（一）、"→"（一）"、"一，"→"一、"、"(1)"→"（1）"；
      短标题末尾句号删除。
-  4. 只改格式不改内容；明显的序号问题直接修（v2.1 用户定版）：
+  4. 只改格式不改内容；明显的序号问题直接修（v2.4.0 用户定版）：
      数字+书名号缺点号（"23 《x》"→"23.《x》"）自动补；同级序号明显跳号
      （缺口≤2，如一、二、四）自动前移改号并级联。重号/乱序/大缺口/越级
      仍只提示——该改号还是补内容，机器无法判断。
@@ -61,7 +61,7 @@ PAT_L2 = re.compile(r'^（([一二三四五六七八九十]{1,3})）([、，,\.�
 PAT_L3 = re.compile(r'^(\d{1,2})([\.、，])')
 PAT_L4 = re.compile(r'^[（(](\d{1,2})[）)]([、，\.]?)')
 
-# 序号缺标点（v2.1 用户定版分两档）：
+# 序号缺标点（v2.4.0 用户定版分两档）：
 #   自动补点——数字+书名号（"23 《零售业态分类》""23《零售业态分类》"→"23.《…"），
 #   段首数字紧跟书名号几乎不可能是别的意思；
 #   只批注——数字+空格+汉字/引号、汉字序数+空格（歧义更高，人工确认）。
@@ -413,7 +413,7 @@ def transform_text(text, keep_inner_spaces=False):
 
     new = ''.join(out)
 
-    # 序号补下脚点（v2.1）：段首"数字+书名号"缺点号直接修，"23 《x》/23《x》"→"23.《x》"
+    # 序号补下脚点（v2.4.0）：段首"数字+书名号"缺点号直接修，"23 《x》/23《x》"→"23.《x》"
     m = PAT_NUM_BOOK.match(new)
     if m:
         new = m.group(1) + '.' + new[m.end():]
@@ -535,7 +535,76 @@ def set_eastasia(run, name):
     run.font.name = 'Times New Roman'
 
 
-def apply_page_numbers(doc):
+def _body_start_section(doc, blocks, roles):
+    """返回正文起始的节序号，以及封面/目录是否与正文同处一节。
+    做法：按 body 子元素顺序累计 sectPr（每个 sectPr 结束一节），
+    找到第一个 role 属正文（chapter/heading/body/list/table）的段落所在节。"""
+    from docx.oxml.ns import qn as _q
+    body = doc.element.body
+    # 元素 -> 节序号
+    sec_of = {}
+    si = 0
+    for child in body.iterchildren():
+        sec_of[child] = si
+        if child.tag == _q('w:p'):
+            pPr = child.find(_q('w:pPr'))
+            if pPr is not None and pPr.find(_q('w:sectPr')) is not None:
+                si += 1
+    BODY_ROLES = {'chapter', 'heading', 'body', 'list', 'table'}
+    FRONT_ROLES = {'title', 'cover', 'cover_table', 'toc'}
+    first_body_sec = None
+    front_secs = set()
+    for (kind, b), role in zip(blocks, roles):
+        el = b._element if kind == 'p' else b._tbl
+        s_i = sec_of.get(el)
+        if s_i is None:
+            continue
+        if role in FRONT_ROLES:
+            front_secs.add(s_i)
+        elif role in BODY_ROLES and first_body_sec is None:
+            first_body_sec = s_i
+    if first_body_sec is None:
+        return 0, False
+    mixed = first_body_sec in front_secs
+    return first_body_sec, mixed
+
+
+def wipe_footer(footer):
+    """彻底清空页脚：直接删除 w:ftr 下所有子元素后补一个空段落。
+    必须走 XML 层——原文页码常被包在 <w:sdt> 内容控件里（Word 自动图文集
+    页码就是这种结构），python-docx 的 footer.paragraphs 看不到 sdt 内的段落，
+    旧写法清不掉，会与新页码叠加成两个页码。"""
+    from docx.oxml import OxmlElement
+    ftr = footer._element
+    for child in list(ftr):
+        ftr.remove(child)
+    ftr.append(OxmlElement('w:p'))
+    return footer.paragraphs[0]
+
+
+def clear_footer(sec):
+    """把该节页脚清空（封面/目录不排页码）。"""
+    for name in ('footer', 'even_page_footer', 'first_page_footer'):
+        try:
+            footer = getattr(sec, name)
+            footer.is_linked_to_previous = False
+        except Exception:
+            continue
+        wipe_footer(footer)
+
+
+def _restart_numbering(sec, start=1):
+    """在该节设置 w:pgNumType start=N，使正文首页重新从 1 起算。"""
+    from docx.oxml import OxmlElement
+    sectPr = sec._sectPr
+    pg = sectPr.find(qn('w:pgNumType'))
+    if pg is None:
+        pg = OxmlElement('w:pgNumType')
+        sectPr.append(pg)
+    pg.set(qn('w:start'), str(start))
+
+
+def apply_page_numbers(doc, blocks=None, roles=None):
     """GB/T 9704 7.5：4号半角宋体阿拉伯数字，左右各一条一字线（— 4 —），
     一字线上缘距版心下边缘 7mm；单页码居右空一字，双页码居左空一字，连续编排。
     版心下边缘=页高297-下边距35=262mm，页码顶距页底 297-262-7=28mm。"""
@@ -554,11 +623,7 @@ def apply_page_numbers(doc):
 
     def build(footer, odd):
         footer.is_linked_to_previous = False
-        for extra in footer.paragraphs[1:]:
-            extra._element.getparent().remove(extra._element)
-        p = footer.paragraphs[0]
-        for r in list(p.runs):
-            r._element.getparent().remove(r._element)
+        p = wipe_footer(footer)     # 含 sdt 内容控件里的旧页码一并清除
         p.paragraph_format.line_spacing = None
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if odd else WD_ALIGN_PARAGRAPH.LEFT
         if not odd:
@@ -584,10 +649,24 @@ def apply_page_numbers(doc):
         if odd:
             styled(p.add_run('　'))       # 单页码居右空一字
 
-    for sec in doc.sections:
+    # v2.4.0（用户定版）：封面与目录所在节不排页码；正文首页页码重新从 1 起算。
+    start_sec, mixed = (0, False)
+    if blocks is not None and roles is not None:
+        start_sec, mixed = _body_start_section(doc, blocks, roles)
+    secs = doc.sections
+    for i, sec in enumerate(secs):
         sec.footer_distance = Mm(28)
+        if i < start_sec:
+            clear_footer(sec)          # 封面/目录节：不排页码
+            continue
+        if i == start_sec:
+            _restart_numbering(sec, 1)  # 正文首页从 1 起算
         build(sec.footer, odd=True)
         build(sec.even_page_footer, odd=False)
+    if mixed:
+        PAGE_NUM_WARN.append(
+            '封面/目录与正文处于同一节，无法单独取消其页码。'
+            '请在正文第一个章标题前插入"分节符（下一页）"后重跑，或手动处理。')
 
 
 def enable_update_fields(doc):
@@ -607,16 +686,28 @@ def enable_update_fields(doc):
 
 
 def clean_decorations(run):
-    """公文黑字白底：清除文字颜色（统一黑）、突出显示、下划线、字符底纹。"""
+    """v2.4.0（用户定版）：加粗与突出显示（高亮）一律不动。
+    下划线、字体颜色只在文档中实际设置了非常规值时才规范化，不再对每个 run
+    写入冗余属性（旧版会给全文每个 run 写 <w:u w:val="none"/>，纯属体积膨胀）。
+    字符底纹仍清除（属版式范畴，影响黑字白底打印）。"""
     from docx.shared import RGBColor
-    run.font.color.rgb = RGBColor(0, 0, 0)
-    run.font.highlight_color = None
-    run.font.underline = False
     rpr = run._element.rPr
-    if rpr is not None:
-        shd = rpr.find(qn('w:shd'))
-        if shd is not None:
-            rpr.remove(shd)
+    if rpr is None:
+        return
+    # 颜色：仅当显式设置且非黑时才改为黑色
+    c = rpr.find(qn('w:color'))
+    if c is not None:
+        v = (c.get(qn('w:val')) or '').lower()
+        if v not in ('000000', 'auto', ''):
+            run.font.color.rgb = RGBColor(0, 0, 0)
+    # 下划线：仅当显式设置了非 none 的下划线时才清除
+    u = rpr.find(qn('w:u'))
+    if u is not None and (u.get(qn('w:val')) or '') not in ('none', ''):
+        run.font.underline = False
+    # 高亮 <w:highlight>、加粗 <w:b> 一律保留，不做任何处理
+    shd = rpr.find(qn('w:shd'))
+    if shd is not None:
+        rpr.remove(shd)
 
 
 def clean_para_shading(para):
@@ -645,6 +736,10 @@ def _set_first_line(para, chars):
         del ind.attrib[qn('w:firstLine')]
 
 
+TABLE_FONT_REPORT = {}
+PAGE_NUM_WARN = []
+
+
 def apply_layout(doc, blocks, roles, indent_headings=False):
     """机构排版规范（2026-07 版，与 GB/T 9704 一致处从略）：
     题目=方正小标宋简体二号不加粗居中；一级黑体、二级楷体_GB2312、
@@ -670,15 +765,23 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
              4: ('仿宋_GB2312', False), None: ('仿宋_GB2312', False)}
     for (kind, block), role in zip(blocks, roles):
         if role == 'table':
-            # 表格自动调整（安全子集）：字体统一仿宋、黑字、去高亮/下划线/底纹；
-            # 字号与表头加粗保留原样，单元格背景（表格样式）不动
+            # v2.4.0（用户定版）：表格内字体与字号一律不改动，只清段落底纹。
+            # 表内出现的非仿宋中文字体记入 TABLE_FONT_REPORT，由 main 汇总提示。
             for row in block.rows:
                 for cell in row.cells:
                     for cp in cell.paragraphs:
                         clean_para_shading(cp)
                         for r in cp.runs:
-                            set_eastasia(r, '仿宋_GB2312')
-                            clean_decorations(r)
+                            if not r.text.strip():
+                                continue
+                            rpr = r._element.rPr
+                            fn = None
+                            if rpr is not None:
+                                rf = rpr.find(qn('w:rFonts'))
+                                if rf is not None:
+                                    fn = rf.get(qn('w:eastAsia'))
+                            if fn and fn not in ('仿宋_GB2312', '仿宋'):
+                                TABLE_FONT_REPORT[fn] = TABLE_FONT_REPORT.get(fn, 0) + 1
             continue
         if role in ('empty', 'cover', 'cover_table', 'toc'):
             continue      # 封面/目录不处理（问题1）
@@ -688,7 +791,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
             for r in block.runs:
                 set_eastasia(r, '方正小标宋简体')
                 r.font.size = Pt(22)
-                r.font.bold = False
+                # v2.4.0：加粗保留原样，不再强制取消
                 clean_decorations(r)
             _set_line_fixed(block, 32)
             pf = block.paragraph_format
@@ -701,7 +804,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
             for r in block.runs:
                 set_eastasia(r, '黑体')
                 r.font.size = Pt(16)
-                r.font.bold = False
+                # v2.4.0：加粗保留原样，不再强制取消
                 clean_decorations(r)
             block.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _set_line_fixed(block, 32)
@@ -723,7 +826,7 @@ def apply_layout(doc, blocks, roles, indent_headings=False):
         for r in block.runs:
             set_eastasia(r, name)
             r.font.size = Pt(16)
-            r.font.bold = bold
+            # v2.4.0：加粗保留原样，不再按 FONTS 表强制设定
             clean_decorations(r)
         _set_line_fixed(block, spacing)
         pf = block.paragraph_format
@@ -834,7 +937,7 @@ RENUMBER_GAP_MAX = 2   # 缺口≤2 视为"明显跳号"自动前移改号；更
 
 
 def fix_sequence(items):
-    """序号检查 + 明显跳号自动改号（v2.1 用户定版：明显问题直接修）。
+    """序号检查 + 明显跳号自动改号（v2.4.0 用户定版：明显问题直接修）。
     items: ('chapter',) 或 ('ord', level, num, para, is_head)。
     章级标题重置各级计数器；跳号缺口≤RENUMBER_GAP_MAX 自动前移改号（级联），
     每处附【已修复】说明供核对；重号/乱序/越级/大缺口只提示——该改哪个号、
@@ -955,6 +1058,15 @@ def main():
                     notes.append((block, f'「{t.strip()}」未另面编排：附件应另起一页，"附件"'
                                   '及顺序号3号黑体顶格、标题居中于第三行（7.3.7），请人工分页'))
             cm = re.match(r'^(表|图)\s*(\d+|[一二三四五六七八九十]+)', t.strip())
+            # v2.4.0：段首为"表/图"且后接空格但无编号者，同样按表题保护其空格，
+            # 并提示补表号（旧版只认"表+数字"，导致"表 ××××"的空格被当多余空格删掉）
+            cap_noname = None
+            if not cm:
+                cap_noname = re.match(r'^(表|图)[ \u3000]+\S', t.strip())
+                if cap_noname:
+                    notes.append((block, f'{cap_noname.group(1)}题缺编号，规范写法为'
+                                  f'"{cap_noname.group(1)}1 ××××"（{cap_noname.group(1)}号与'
+                                  f'题名之间空一格，居中置于表上方/图下方），请补编号并保持全文连续'))
             if cm:
                 captions.append((cm.group(1), cm.group(2), t.strip()[:20], block))
             if t.count('《') != t.count('》'):
@@ -966,7 +1078,8 @@ def main():
             for cat, msg in review_checks(t):
                 notes.append((block, (cat, msg)))
             new, stats, hs = transform_protect_ordinal(t) if miss else transform_text(
-                t, keep_inner_spaces=(role == 'chapter') or bool(cm))  # 表题/图题空格保留
+                t, keep_inner_spaces=(role == 'chapter') or bool(cm)
+                or bool(cap_noname))  # 表题/图题空格保留（含缺编号的表题）
             total += stats
             notes += [(block, h) for h in hs]
             if new != t:
@@ -1056,7 +1169,7 @@ def main():
 
     if not a.no_layout:
         apply_layout(doc, blocks, roles, indent_headings=a.indent_headings)
-        apply_page_numbers(doc)
+        apply_page_numbers(doc, blocks, roles)
         enable_update_fields(doc)
     elif a.review:
         for line in audit_layout(blocks, roles):
@@ -1076,9 +1189,10 @@ def main():
     detail = '、'.join(f'{k} {v}' for k, v in total.most_common()) or '无'
     layout_msg = '版式已按机构规范统一（页边距、题目小标宋、标题黑体/楷体_GB2312/' \
         '仿宋_GB2312、正文仿宋_GB2312 3号、标题行距32磅、正文28磅；真标题顶格、' \
-        '正文与清单缩进2字符；封面与目录未改动；黑字白底：已清页面背景/段落底纹/' \
-        '高亮/彩字/下划线；表格字体统一仿宋_GB2312；页码按GB/T 9704 7.5：' \
-        '宋体4号"— N —"，距版心下缘7mm，单页居右、双页居左各空一字）' \
+        '正文与清单缩进2字符；封面与目录未改动；加粗与高亮一律保留不动；' \
+        '表格字体字号保留不动；页码按GB/T 9704 7.5：宋体4号"— N —"，' \
+        '距版心下缘7mm，单页居右、双页居左各空一字，封面与目录不排页码、' \
+        '正文首页从1起算）' \
         if not a.no_layout else '版式保留原样'
     if not a.no_layout and a.indent_headings:
         layout_msg = layout_msg.replace('真标题顶格、正文与清单缩进2字符',
@@ -1092,6 +1206,13 @@ def main():
         print(f'已自动修复（请顺带核对）：{h}')
     for para, h in notes:
         print(f'提示（未改动，需人工处理）：{h}')
+    for w in PAGE_NUM_WARN:
+        print(f'页码提示：{w}')
+    if TABLE_FONT_REPORT:
+        detail_f = '、'.join(f'{k} {v}处' for k, v in
+                            sorted(TABLE_FONT_REPORT.items(), key=lambda x: -x[1]))
+        print(f'表格字体提示（未改动）：表内存在非仿宋中文字体 —— {detail_f}。'
+              f'如需统一，请另行指定。')
 
 
 if __name__ == '__main__':

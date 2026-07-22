@@ -294,7 +294,7 @@ def test_end_to_end():
         check('半角逗号已修', '中心城区，面积' in p.text)
         p = _para(d, '（一）总体要求')
         check('二级标题楷体顶格', _flc(p) == '0' and _ea(p) == '楷体_GB2312'
-              and p.runs[0].font.bold is False)
+              and p.runs[0].font.bold is not True)   # v2.4.0 加粗一律不动：原稿未加粗保持 None
         p = _para(d, '1.优化布局结构')
         check('真三级标题序号已修且顶格', p is not None and _flc(p) == '0')
         check('三级标题行距32磅(v2.3)', p.paragraph_format.line_spacing.pt == 32)
@@ -310,7 +310,7 @@ def test_end_to_end():
         body_texts = [q.text for q in d.paragraphs]
         check('正文空段已删', body_texts.count('') <= 2)   # 封面1 + 两表间1
         check('封面表格字体不动', _ea(d.tables[0].rows[0].cells[0].paragraphs[0]) == '华文行楷')
-        check('正文表格字体统一仿宋', _ea(d.tables[1].rows[0].cells[0].paragraphs[0]) == '仿宋_GB2312')
+        check('正文表格字体保持原样(v2.4)', _ea(d.tables[1].rows[0].cells[0].paragraphs[0]) is None)
         check('两表之间空段保留', len(d.tables) == 3 or '第二表' in d.tables[-1].rows[0].cells[0].text)
         check('汇总含已修复说明', '已自动修复' in r.stdout and '「四、」→「三、」' in r.stdout)
         check('清单大缺口只提示', '缺口较大' in r.stdout)
